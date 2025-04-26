@@ -53,7 +53,7 @@ def train(
     targets: np.ndarray,
     add_features: Iterable[Tuple[FunctionTransformer, Sequence[Any]]] = [],
     valid_idxs: np.ndarray,
-    n_epoch: int = 25, #32
+    n_epoch: int = 32, #32
     patience: int = 8,
     path: Optional[Path] = None,
 ) -> Learner:
@@ -169,7 +169,7 @@ def train(
     # )
     
     #for imbalanced regression
-    loss_func = WeightedMSELoss()
+    loss_func = WeightedL1Loss()
 
     dls = DataLoaders(train_dl, valid_dl)
     

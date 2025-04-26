@@ -77,7 +77,7 @@ def train_categorical_model_(
 
 
     #NOTE: HERE THE TARGETS ARE MIN-MAX NORMALIZED COLUMN WISE
-    df = get_cohort_df(clini_table, slide_csv, feature_dir, target_label).dropna(subset=target_label)
+    df = get_cohort_df(clini_table, slide_csv, feature_dir, target_label)
     scaler=MinMaxScaler()
 
     df[target_label] = scaler.fit_transform(df[[target_label]])
@@ -189,7 +189,8 @@ def categorical_crossval_(
     binary_label: Optional[str] = None,
     cat_labels: Sequence[str] = [],
     cont_labels: Sequence[str] = [],
-    n_splits: int = 5
+    n_splits: int = 5,
+    categories: Optional[Iterable[str]] = None,
 ) -> None:
     """Performs a cross-validation for a categorical target.
 
@@ -241,9 +242,24 @@ def categorical_crossval_(
     else:
         #added shuffling with seed 1337
         if binary_label is None:
-            skf = KFold(n_splits=n_splits, shuffle=True, random_state=1337)
+            # **** OLD ****
+            # skf = KFold(n_splits=n_splits, shuffle=True, random_state=1337)
+            # patient_df = df.groupby('PATIENT').first().reset_index()
+            # folds = tuple(skf.split(patient_df.PATIENT, patient_df[target_label])) # patient_df['SITE_CODE'])) with stratified potentially
+            # torch.save(folds, fold_path)
+            # **** NEW ****
+            # Create bins for stratification with continuous target
+            num_bins = 5 
             patient_df = df.groupby('PATIENT').first().reset_index()
-            folds = tuple(skf.split(patient_df.PATIENT, patient_df[target_label])) # patient_df['SITE_CODE'])) with stratified potentially
+            target_values = patient_df[target_label].values
+            # Create bin edges that distribute samples somewhat evenly
+            _, bin_edges = np.histogram(target_values, bins=num_bins)
+            # Assign each value to a bin
+            binned_targets = np.digitize(target_values, bin_edges[:-1])
+            
+            # Use stratified k-fold with the binned values
+            skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=1337)
+            folds = tuple(skf.split(patient_df.PATIENT, binned_targets))
             torch.save(folds, fold_path)
         #add option to create balanced folds based on binary equivalent
         else:

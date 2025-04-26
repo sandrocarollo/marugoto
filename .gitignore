@@ -7,3 +7,6 @@ runs/
 *.pyc
 *.pyc
 *.txt
+results/
+*.out
+marugoto.egg-info/

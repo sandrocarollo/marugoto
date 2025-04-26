@@ -76,7 +76,27 @@ def make_dataset(
             bags=bags, targs=targets, bag_size=bag_size)
 
 def get_target_enc(mil_learn):
-    return mil_learn.dls.train.dataset._datasets[-1].encode
+    dataset = mil_learn.dls.train.dataset
+
+    # Ensure that `_datasets` attribute exists
+    if hasattr(dataset, '_datasets'):
+        datasets = dataset._datasets
+        
+        # Access the first element of the last tuple in `_datasets`
+        last_dataset = datasets[-1]
+        
+        if isinstance(last_dataset, tuple):
+            # Assuming the first element is a BagDataset
+            bag_dataset = last_dataset[0]
+            
+            if hasattr(bag_dataset, 'encode'):
+                return bag_dataset.encode
+            else:
+                raise AttributeError("'BagDataset' object has no attribute 'encode'")
+        else:
+            raise AttributeError("Expected a tuple in '_datasets' but got a different type.")
+    else:
+        raise AttributeError("'MapDataset' object has no attribute '_datasets'")
 
 #CHANGED
 def _make_basic_dataset(
