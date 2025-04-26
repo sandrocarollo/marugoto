@@ -1,6 +1,6 @@
 # %%
 from enum import Enum, auto
-from typing import Mapping, Optional, Sequence, Tuple
+from typing import Mapping, Optional, Sequence, Tuple, List
 from fastai.vision.learner import load_learner
 import numpy as np
 from sklearn.preprocessing import OneHotEncoder
@@ -9,26 +9,45 @@ from marugoto.mil.data import get_target_enc
 from matplotlib.patches import Patch
 from scipy import interpolate
 import torch
+import openslide
+import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
+import matplotlib.colorbar as cbar
+import matplotlib.colors as mcolors
 from PIL import Image
 import h5py
+import argparse
+import re
 
-__all__ = ['plot_heatmaps', 'MapType']
+__all__ = ['plot_heatmaps_', 'MapType']
 # list of allowed formats for whole slide images
-wsi_suffixes = ['.svs', '.ndpi', '.tif']
+wsi_suffixes = ['.svs', '.ndpi', '.tif', '.qptiff']
 # define colours for heatmap plots here
 colors = np.array([[1, 0, 0], [0, 0, 1], [0, 1, 1], [1, 1, 0]])
-
+# colors = plt.cm.plasma(np.linspace(0, 1, 256))[:, :3]
 
 class MapType(Enum):
     ATTENTION = auto()
-    PROBABILITY = auto()
+    # PROBABILITY = auto() old classification
+    PREDICTION = auto()
     CONTRIBUTION = auto()
+"""
+*ATTENTION* Heatmap:
+What it shows: The relative importance or "attention" the model gives to each patch. High attention means the model focuses more on that patch when making predictions.
+Usage: Useful to understand which areas of an input contribute most to the model's decision, independent of the actual output values.
 
+*PREDICTION* Heatmap:
+What it shows: The direct output of the regression model. This represents the predicted values for each patch, which in a regression context could be any continuous value.
+Usage: Useful to visualize the actual predictions made by the model across different patches. This helps in identifying patterns in predictions over the input space.
+
+*CONTRIBUTION* Heatmap:
+What it shows: A combination of attention and prediction. It represents the contribution of each patch to the final prediction, weighted by how much attention the model gives to each patch.
+Usage: Provides a nuanced view combining both attention and regression output, showing not just which patches the model focuses on, but how much they contribute to the overall prediction.
+"""
 
 def get_dict_maptype_to_coords_scores(h5_feature_path: Path, model: nn.Module,
-                                      map_types: list[MapType] = [
+                                      map_types: List[MapType] = [
                                           MapType.ATTENTION],
                                       ) -> dict:
 
@@ -48,39 +67,28 @@ def get_dict_maptype_to_coords_scores(h5_feature_path: Path, model: nn.Module,
     # calculate attention, scores etc.
     encs = encoder(feats)
     patient_atts = torch.softmax(attention(encs), dim=0).detach()
-    #patient_atts_plot = np.zeros(patient_atts.shape)
-    #for i in np.arange(patient_atts.shape[0]):
-    #    patient_atts_plot[i,0] = percentileofscore(patient_atts[:,0],patient_atts[i,0].numpy())
+    # patient_scores = torch.softmax(head(encs), dim=1).detach() old for classification
+    patient_scores = head(encs).detach()
+    normed_patient_atts=(patient_atts-patient_atts.min())/(patient_atts.max()-patient_atts.min())
+    patient_weighted_scores=normed_patient_atts*patient_scores
 
-    #patient_atts *= len(patient_atts)
-    #encs = patient_atts*encs
-    patient_scores = torch.softmax(head(encs), dim=1).detach()
-    #n_classes = patient_scores.shape[-1]*1.
-    # scores scaled by attention, centered around 0
-    # Above is a very bad idea for heat maps!
-    patient_scores=(patient_atts-patient_atts.min())/(patient_atts.max()-patient_atts.min())*patient_scores
-    if patient_atts.ndim < patient_scores.ndim:
-        patient_atts = patient_atts.unsqueeze(-1)
-    # tweak here: Normalise such that max attentionscore=1
-    patient_atts = patient_atts/torch.max(patient_atts)
-    patient_weighted_scores = patient_scores#patient_atts * patient_scores
-    assert patient_scores.shape[-1] <= colors.shape[0], f'not enough colours.\n'\
-        'Can only plot score for max {colors.shape[0]}'\
-        'classes at a time!\n Number of classes asked for:'\
-        f'{len()} not supported.'
+    # classification assertion
+    # assert patient_scores.shape[-1] <= colors.shape[0], f'not enough colours.\n'\
+    #     'Can only plot score for max {colors.shape[0]}'\
+    #     'classes at a time!\n Number of classes asked for:'\
+    #     f'{len()} not supported.'
 
     for map_type in map_types:
-        match map_type:
-            case MapType.ATTENTION:
-                scores = patient_atts.numpy()
-                scores -= scores.min()
-                scores /= (scores.max()-scores.min())
-            case MapType.PROBABILITY:
-                scores = patient_scores.numpy()
-            case MapType.CONTRIBUTION:
-                scores = patient_weighted_scores.numpy()
-            case _:
-                raise ValueError(f'heat map type {map_type} not supported!')
+        if map_type == MapType.ATTENTION:
+            scores = patient_atts.numpy()
+            scores -= scores.min()
+            scores /= (scores.max() - scores.min())
+        elif map_type == MapType.PREDICTION:
+            scores = patient_scores.numpy()
+        elif map_type == MapType.CONTRIBUTION:
+            scores = patient_weighted_scores.numpy()
+        else:
+            raise ValueError(f'Heat map type {map_type} not supported!')
 
         dict_maptype_to_coords_scores[map_type] = coords.numpy(), scores
 
@@ -88,7 +96,7 @@ def get_dict_maptype_to_coords_scores(h5_feature_path: Path, model: nn.Module,
 
 
 def _MIL_heatmap_for_slide(coords: np.ndarray, scores: np.ndarray,
-                           colours: np.ndarray = None) -> np.ndarray:
+                           colours: np.ndarray = None, threshold_map: float = 1.0) -> np.ndarray:
     """
     Args: 
         h5_feature_path: path to .h5 file with features to analyse
@@ -130,78 +138,98 @@ def _MIL_heatmap_for_slide(coords: np.ndarray, scores: np.ndarray,
     activations = np.nan_to_num(activations) * np.expand_dims(mask, 2)
 
     heatmap = _visualize_activation_map(
-        activations.transpose(1, 0, 2), colours[:activations.shape[-1]])
+        activations.transpose(1, 0, 2), colours[:activations.shape[-1]], threshold_map=threshold_map)
 
     return heatmap
 
 
-def _plot_heatmap_(coords, heatmap, legend_elements,
+def _plot_heatmap_(coords, heatmap,
                    outdir: Path, wsi_path: Optional[Path] = None,
-                   superimpose: bool = True, alpha: int = 0.5,
-                   ) -> None:
-
+                   superimpose: bool = True, alpha: float = 0.5,
+                   heatmap_scale_x: float = 1.0, heatmap_scale_y: float = 1.0) -> None:
     format = '.svg'
-    plt.figure(dpi=600)
-
     stride = _get_stride(coords)
-    covered_area = (coords.max(0)+stride)
-
+    covered_area = (coords.max(0) + stride)
+    plt.figure(dpi=600)
     if wsi_path:
         from openslide import OpenSlide
 
         assert wsi_path.suffix in wsi_suffixes, \
-            f'cannot read files with extension {wsi_path.suffix}. ' \
+            f'Cannot read files with extension {wsi_path.suffix}. ' \
             f'Please provide a WSI with extension in {wsi_suffixes}.'
-
+        title = wsi_path.stem if wsi_path else "Heatmap"
         slide = OpenSlide(str(wsi_path))
-
-        # get the first level smaller than max_size
-        # FIXME: replace with get_thumbnail?
         level = next((i for i, dims in enumerate(slide.level_dimensions)
-                     if max(dims) <= 2400*2),
-                     slide.level_count-1)
-        thumb = slide.read_region(
-            (0, 0), level, slide.level_dimensions[level])
-        covered_area_size = (
-            covered_area / slide.level_downsamples[level]).astype(int)
+                      if max(dims) <= 2400*2), slide.level_count - 1)
+        thumb = slide.read_region((0, 0), level, slide.level_dimensions[level])
+        thumb = thumb.convert("RGBA")  # Ensure RGBA mode for alpha compositing
 
-        if superimpose:
-            # make heatmap transparent by putting alpha_channel values <1!
-            heatmap[:, :, -1] = heatmap[:, :, -1]*alpha
+        covered_area_size = (covered_area / slide.level_downsamples[level]).astype(int)
+        covered_area_size = np.array(thumb.size)
+
+        # Resize heatmap to match the thumbnail size
         heatmap = Image.fromarray(heatmap)
-        # make heatmap and thumb the same size
-        scaled_heatmap = Image.new('RGBA', thumb.size)
-        scaled_heatmap.paste(heatmap.resize(
-            covered_area_size, resample=Image.Resampling.NEAREST))
+        heatmap_resized = heatmap.resize((int(covered_area_size[0] * heatmap_scale_x), 
+                                          int(covered_area_size[1] * heatmap_scale_y)), 
+                                         resample=Image.Resampling.NEAREST)
+        
         if superimpose:
-            thumb.alpha_composite(scaled_heatmap)
-            plt.imshow(thumb)
+            # Apply transparency directly to heatmap alpha channel
+            alpha_channel = heatmap_resized.split()[-1]
+            alpha_channel = alpha_channel.point(lambda p: p * alpha)
+            heatmap_resized.putalpha(alpha_channel)
+            
+            # Position the resized heatmap on top of the original thumbnail
+            heatmap_position = ((thumb.width - heatmap_resized.width) // 2,
+                                (thumb.height - heatmap_resized.height) // 2)
+            heatmap_position = (0,0)
+            # Create a new image with transparent background and paste both images
+            combined_image = Image.new('RGBA', thumb.size, (255, 255, 255, 0))
+            combined_image.paste(thumb, (0, 0))
+            combined_image.paste(heatmap_resized, heatmap_position, mask=heatmap_resized)
+            
+            plt.figure(figsize=(12, 6), dpi=300)
+            plt.imshow(combined_image)
             plt.axis('off')
+            plt.title(wsi_path.stem)
         else:
-            _, axs = plt.subplots(1, 2, figsize=(12, 6), dpi=300)
+            # Plotting side by side
+            fig, axs = plt.subplots(1, 2, figsize=(12, 6), dpi=300)
             axs[0].imshow(thumb)
             axs[0].axis('off')
-            axs[1].imshow(scaled_heatmap)
+            axs[1].imshow(heatmap_resized)
             axs[1].axis('off')
+            axs[1].set_title(wsi_path.stem)
     else:
         print(f'No path to WSI given, plotting heatmap without WSI ...\n')
-        # only plot heatmap
         heatmap = Image.fromarray(heatmap)
-        heatmap = heatmap.resize(np.multiply(
-            heatmap.size, 8), resample=Image.Resampling.NEAREST)
+        heatmap = heatmap.resize(np.multiply(heatmap.size, 8), resample=Image.Resampling.NEAREST)
+        plt.figure(figsize=(12, 6), dpi=300)
         plt.imshow(heatmap)
         plt.axis('off')
+        plt.title("Heatmap")  # Title when only heatmap is present    
 
-    title = wsi_path.stem
+    # Add legend to the figure
+    # legend = plt.legend(title=title, handles=legend_elements, bbox_to_anchor=(1, 1), loc='upper left')
 
-    legend = plt.legend(
-        title=title, handles=legend_elements, bbox_to_anchor=(1, 1), loc='upper left')
+    # Create a color bar for the attention values
+    # Create a color bar for the attention values, considering alpha
+    norm = mcolors.Normalize(vmin=0, vmax=1)  # Normalize based on heatmap range
+    cmap = plt.get_cmap('viridis')
+    cmap_with_alpha = cmap(np.linspace(0, 1, 256))
+    cmap_with_alpha[:, -1] = alpha  # Apply the same alpha transparency
+    sm = plt.cm.ScalarMappable(cmap=mcolors.ListedColormap(cmap_with_alpha), norm=norm)
+    sm.set_array([])
 
-    out_file = (outdir/wsi_path.stem).with_suffix(format)
+    cbar_obj = plt.colorbar(sm, ax=plt.gca(), fraction=0.046, pad=0.04)
+    cbar_obj.set_label('Attention Level')
+
+    out_file = (outdir / wsi_path.stem).with_suffix(format) if wsi_path else (outdir / "heatmap").with_suffix(format)
+    print('[HEATMAP]')
     print(f'Writing output to file: {out_file}')
     out_file.parent.mkdir(exist_ok=True, parents=True)
 
-    plt.savefig(out_file, bbox_extra_artists=[legend], bbox_inches='tight')
+    plt.savefig(out_file, bbox_inches='tight')
     plt.close('all')
 
 
@@ -217,11 +245,14 @@ def _get_stride(coordinates: np.ndarray) -> int:
     return stride
 
 
-def _visualize_activation_map(activations: np.ndarray, colors: np.ndarray, alpha: float = 1.) -> np.ndarray:
-    """Transforms an activation map into an RGBA numpy array.
+def _visualize_activation_map(activations: np.ndarray, colors: np.ndarray, alpha: float = 1.,
+    clipping: bool=True, threshold_map: float = 1.0) -> np.ndarray:
+    """Transforms an activation map into an RGBA numpy array for regression tasks.
     Args:
-        activations: An (h, w, D) array of activations.
-        colors: A (D, 3) array mapping each of the target classes to a color.
+        activations: An (h, w, 1) array of activations.
+        colors: A (256, 3) array mapping each of the target classes to a color.
+        alpha: Transparency level for the heaatmap
+        clipping: Whether to clip the RGB values to prevent overflow
     Returns:
         An interpolated activation map. Regions which the algorithm assumes to be background
         will be transparent.
@@ -231,16 +262,29 @@ def _visualize_activation_map(activations: np.ndarray, colors: np.ndarray, alpha
     # activations should be less or equal to 1
     assert activations[2].max() <= 1, f"Activations should be less than one, otherwise maps get clipped! \n \
         Max value provided {activations[2].max()}."
-    # transform activation map into RGB map
-    rgbmap = activations.dot(colors)
+    
+    norm_activations = np.clip(activations.squeeze(), 0, 1)  # Squeeze to remove the extra dimension if exists
+    #print(f"Activations range after clipping: {norm_activations.min()} to {norm_activations.max()}")
+    # Use the viridis colormap from matplotlib for more varied color mapping
+    colormap = plt.cm.viridis
+    rgbmap = colormap(norm_activations)[:, :, :3]  # Use only RGB, ignore alpha channel from colormap
+    #print(f"Sample RGB values: {rgbmap[0, 0]}, {rgbmap[25, 25]}, {rgbmap[-1, -1]}")
+    # Apply clipping if necessary
+    if clipping:
+        rgbmap = np.clip(rgbmap, 0, 1)  # Clip to make sure RGB values are within valid range
+        
+    # Create alpha channel
+    # alpha_channel = (norm_activations * alpha).astype(np.float32)
+    alpha_channel = np.ones_like(norm_activations) * alpha  # Constant alpha, no transparency
+    alpha_channel[norm_activations <= threshold_map] = 0  # Make alpha 0 where activations are 0
+    #print(f"Alpha channel range: {alpha_channel.min()} to {alpha_channel.max()}")
 
-    # create RGBA map with non-zero activations being the foreground
-    mask = activations.any(axis=2)
+    # Stack RGB and alpha channels to create RGBA image
+    im_data = np.dstack((rgbmap, alpha_channel))
 
-    # mask * alpha gives alpha at non zero values of activation
-    # below gives value for the alpha channel
-    im_data = (np.concatenate([rgbmap, np.expand_dims(
-        mask * alpha, -1)], axis=2) * 255.5).astype(np.uint8)
+    # Convert to 8-bit per channel
+    im_data = (im_data * 255).astype(np.uint8)
+    #print(f"Image data range after conversion to 8-bit: {im_data.min()} to {im_data.max()}")
 
     return im_data
 
@@ -274,10 +318,113 @@ def _get_slide_features(h5_feature_dir, ws_path):
 
     return list(zip(whole_slides, h5_feature_paths))
 
+def save_top_patches_to_csv(dict_maptype_to_coords_scores, map_type, top_n):
+    # Extract coordinates and scores
+    coords, scores = dict_maptype_to_coords_scores[map_type]
+    
+    # Flatten scores to 1D if necessary (for multi-class cases)
+    scores = scores.squeeze()
 
-def plot_heatmaps(out_dir: Path, train_dir: Path, ws_path: Path, h5_feature_dir: Path,
-                  map_types: list[MapType] = [MapType.ATTENTION],
-                  superimpose: bool = True, alpha: float = 0.5):
+    # Combine coords and scores for sorting
+    data = list(zip(coords, scores))
+    
+    # Sort by score in descending order (highest score first)
+    sorted_data = sorted(data, key=lambda x: x[1], reverse=True)
+    
+    # Get the top N patches
+    top_patches = sorted_data[:top_n]
+    
+    # Create a DataFrame for easy saving
+    df = pd.DataFrame({
+        'coords': [f"({int(x[0])}, {int(x[1])})" for x, _ in top_patches],
+        'attention_score': [score for _, score in top_patches]
+    })
+    return df
+
+def extract_positions(coords):
+    # Use regex to find numbers in the string
+    match = re.findall(r'\d+', coords)
+    if match:
+        pos_0 = int(match[0])
+        pos_1 = int(match[1])
+        return pos_0, pos_1
+    return None, None
+
+def get_n_toptiles(
+    slide_path,
+    output_dir,
+    scores,
+    stride: int,
+    n: int = 8,
+    tile_size: int = 224,
+    thumbnail_size: tuple = (2048, 2048)
+) -> None:
+    slide = openslide.open_slide(slide_path)
+    slide_mpp = float(slide.properties[openslide.PROPERTY_NAME_MPP_X])
+
+    # determine the scaling factor between heatmap and original slide
+    # 256 microns edge length by default, with 224px = ~1.14 MPP (± 10x magnification)
+    feature_downsample_mpp = (
+        256 / stride
+    )  # NOTE: stride here only makes sense if the tiles were NON-OVERLAPPING
+    scaling_factor = feature_downsample_mpp / slide_mpp
+
+    top_score = scores.head(n).reset_index()
+
+    # OPTIONAL: if the score is not larger than 0.5, it's indecisive on directionality
+    # then add [top_score.values > 0.5]
+    for index, row in top_score.iterrows():
+        # Extract positions from the score row
+        pos_0, pos_1 = extract_positions(row['coords'])
+        
+        # Ensure positions are valid
+        if pos_0 is None or pos_1 is None:
+            print(f"[ERROR] Invalid coordinates: {row['coords']}")
+            continue
+        # print(f"Scaling factor: {scaling_factor}")
+        # Scale positions to match slide resolution
+        scaled_pos_0 = int(pos_0 * scaling_factor)
+        scaled_pos_1 = int(pos_1 * scaling_factor)
+
+        # Define target tile size
+        target_size = (int(1 * stride * scaling_factor), int(1 * stride * scaling_factor))
+
+        # Read the region from the slide
+        tile = (
+            slide.read_region(
+                (scaled_pos_0, scaled_pos_1),
+                0,
+                target_size
+            )
+            .convert("RGB")
+            .resize((tile_size, tile_size))  # Resize to desired tile size
+        )
+
+        # Construct filename and save path
+        tile_filename = f"toptiles_{index+1}_({pos_0},{pos_1}).jpg"
+        tile_output_dir = output_dir / "toptiles"
+        tile_output_dir.mkdir(exist_ok=True, parents=True)
+        tile_path = tile_output_dir / tile_filename
+
+        # Save the tile
+        try:
+            tile.save(tile_path)
+            print(f"Tile saved at {tile_path}")
+        except Exception as e:
+            print(f"[ERROR] Failed to save tile at {tile_path}: {e}")
+        
+    # Create and save a thumbnail of the entire slide
+    thumbnail = slide.get_thumbnail(thumbnail_size)  # Resize the entire slide to desired size
+    thumbnail_filename = "slide_thumbnail.jpg"
+    thumbnail_path = output_dir / thumbnail_filename
+    thumbnail.save(thumbnail_path)
+    print('[THUMBNAIL]')
+    print(f"Thumbnail saved at {thumbnail_path}")
+
+def plot_heatmaps_(out_dir: Path, train_dir: Path, ws_path: Path, h5_feature_dir: Path,
+                  map_types: List[MapType] = [MapType.ATTENTION],
+                  superimpose: bool = True, alpha: float = 0.5, threshold_map: float = 1.0,
+                  heatmap_scale_x: float = 1.0, heatmap_scale_y: float = 1.0):
     """Generates heatmaps for whole slide images.
 
     Outputs heatmaps to project directory, in subfolders for each map_type.
@@ -293,16 +440,25 @@ def plot_heatmaps(out_dir: Path, train_dir: Path, ws_path: Path, h5_feature_dir:
         alpha: transparacy of heatmap
     """
     slide_features = _get_slide_features(h5_feature_dir, ws_path)
-
     learn = load_learner(train_dir/'export.pkl')
-    target_enc = get_target_enc(learn)
-    categories = target_enc.categories_[0]
+    # DEBUG
+    # print(type(learn.dls.train.dataset))
+    # print(learn.dls.train.dataset)
+    # print(dir(learn.dls.train.dataset))
+    # print(learn.model)
+    
+    # print(learn.dls.train.dataset._datasets[-1])
 
-    str_targets = ['contrib_'+target for target in categories]
+    # target_enc = get_target_enc(learn)
+    target_enc = learn.dls.train.dataset._datasets[-1][0]
+    categories = np.unique(target_enc)
+
+    str_targets = ['contrib_'+np.array2string(target) for target in categories]
 
     for slide_path, h5_feature_path in slide_features:
         dict_maptype_to_coords_scores = get_dict_maptype_to_coords_scores(h5_feature_path,
                                                                           model=learn.model, map_types=map_types)
+        
         for map_type in map_types:
             coords, scores = dict_maptype_to_coords_scores[map_type]
             if map_type == MapType.ATTENTION:
@@ -311,251 +467,80 @@ def plot_heatmaps(out_dir: Path, train_dir: Path, ws_path: Path, h5_feature_dir:
             else:
                 legend_elements = [Patch(facecolor=color, label=class_) for class_,
                                    color in zip(str_targets, colors)]
-            heatmap = _MIL_heatmap_for_slide(coords=coords, scores=scores)
+            # print(f"Coordinates shape: {coords.shape}, range: {coords.min()} to {coords.max()}")
+            # print(f"Scores shape: {scores.shape}, range: {scores.min()} to {scores.max()}")
 
-            _plot_heatmap_(coords, heatmap=heatmap, legend_elements=legend_elements,
-                           wsi_path=slide_path, superimpose=superimpose, outdir=out_dir/map_type.name,
-                           alpha=alpha)
+            heatmap = _MIL_heatmap_for_slide(coords=coords, scores=scores, threshold_map=threshold_map)
 
+            _plot_heatmap_(coords, heatmap=heatmap,
+                           outdir=out_dir/map_type.name, wsi_path=slide_path, superimpose=superimpose, 
+                           alpha=alpha, heatmap_scale_x=heatmap_scale_x, heatmap_scale_y=heatmap_scale_y)
+            
+            score_ranking_df = save_top_patches_to_csv(dict_maptype_to_coords_scores, map_type=map_type, top_n=50)
+            out_file = ((out_dir/map_type.name) / "top_patches_ranking.csv")
+            score_ranking_df.to_csv(out_file, index=True, index_label='')
+            print('[TOP PATCHES]')
+            print(f'Top patches saved in {out_file}')
+            # Top tiles generation part:
+            n_toptiles = 10
+            print('[TOP TILES]')
+            print(f"Generation of {n_toptiles} top tiles.")
+            print(f"Creating top tiles...")
+            stride = _get_stride(coords)
+            get_n_toptiles(
+                slide_path=slide_path,
+                stride=stride,
+                output_dir=out_dir/map_type.name,
+                scores=score_ranking_df,
+                n=n_toptiles,
+                tile_size=512,
+                thumbnail_size=(2048, 2048)
+            )
+            
 
 def get_overlay(thumb,covered_area_size, coords, scores, alpha=0.6, colors=colors):
+    """ takes a thumb image, resizes it to covered_area_size, gets heatmap for scores
+        and overlays score heatmap over thumb image.
+    """
 # get attention map in overlay
-        heatmap = _MIL_heatmap_for_slide(coords=coords, scores= scores,
-                                colours=colors)
-        heatmap[:, :, -1] = heatmap[:, :, -1]*alpha
-        heatmap = Image.fromarray(heatmap)
-        # make heatmap and thumb the same size
-        scaled_heatmap = Image.new('RGBA', thumb.size)
-        scaled_heatmap.paste(heatmap.resize(
-            covered_area_size, resample=Image.Resampling.NEAREST))
-        return Image.alpha_composite(thumb, scaled_heatmap)
-
-def plot_heatmaps_two_cats(out_dir: Path, train_dir1: Path, train_dir2: Path, ws_path: Path, h5_feature_dir: Path,
-                              superimpose: bool = True, alpha: float = 0.6):
-    
-    format = '.svg'
-    plt.figure(dpi=600)
-
-    slide_features = _get_slide_features(h5_feature_dir, ws_path)
-
-    learn1 = load_learner(train_dir1/'export.pkl')
-    target_enc1 = get_target_enc(learn1)
-    categories1 = target_enc1.categories_[0]
-
-    learn2 = load_learner(train_dir2/'export.pkl')
-    target_enc2 = get_target_enc(learn1)
-    categories2 = target_enc2.categories_[0]
-
-    from openslide import OpenSlide
-    map_types = [MapType.ATTENTION, MapType.PROBABILITY]
-
-    for slide_path, h5_feature_path in slide_features:
-        dict_maptype_to_coords_scores1 = get_dict_maptype_to_coords_scores(
-            h5_feature_path, model=learn1.model, map_types=map_types)
-        coords, att_scores1 = dict_maptype_to_coords_scores1[MapType.ATTENTION]
-        dict_maptype_to_coords_scores2 = get_dict_maptype_to_coords_scores(
-            h5_feature_path, model=learn2.model, map_types=map_types)
-        
-        _, att_scores2 = dict_maptype_to_coords_scores2[MapType.ATTENTION]
-
-        stride = _get_stride(coords)
-        covered_area = (coords.max(0)+stride)
-
-        # get thumbnail
-
-        assert slide_path.suffix in wsi_suffixes, \
-            f'cannot read files with extension {slide_path.suffix}. ' \
-            f'Please provide a WSI with extension in {wsi_suffixes}.'
-
-        slide = OpenSlide(str(slide_path))
-        level = next((i for i, dims in enumerate(slide.level_dimensions)
-                     if max(dims) <= 2400*2),
-                     slide.level_count-1)
-        thumb = slide.read_region(
-            (0, 0), level, slide.level_dimensions[level])
-        covered_area_size = (
-            covered_area / slide.level_downsamples[level]).astype(int)
-
-        # get attention map in overlay
-        att_overlay1 = get_overlay(thumb,covered_area_size,coords,att_scores1,alpha=alpha)
-        att_overlay2 = get_overlay(thumb,covered_area_size,coords,att_scores2,alpha=alpha)
-        _, probs1 = dict_maptype_to_coords_scores1[MapType.PROBABILITY]
-        _,probs2 = dict_maptype_to_coords_scores2[MapType.PROBABILITY]
-        prob_overlay1 = get_overlay(thumb,covered_area_size,coords,probs1[:,0],alpha=alpha)
-        color = np.expand_dims(colors[1, :], axis=0)
-        prob_overlay2 = get_overlay(thumb,covered_area_size,coords,probs2[:,0],alpha=alpha,
-            colors=color)
-        prob_tot=np.stack([probs1[:,0],probs2[:,0]],axis=1)
-        prob_tot_over=get_overlay(thumb,covered_area_size,coords,prob_tot,alpha=alpha)
-        _, axs = plt.subplots(2, 3, figsize=(12, 6), dpi=300)
-        axs[0, 0].imshow(thumb)
-        axs[0, 0].legend(title='thumb')
-        axs[0, 0].axis('off')
-        axs[0, 1].imshow(att_overlay1)
-        axs[0, 1].axis('off')
-        axs[0, 1].legend(title='attention')
-        axs[0, 2].imshow(att_overlay2)
-        axs[0, 2].axis('off')
-        axs[1,0].imshow(prob_overlay1)
-        legend_elements = [Patch(facecolor=colors[0], label='prob_MSIH')]
-        axs[1, 0].legend(title='contribution', handles=legend_elements,
-                         bbox_to_anchor=(1, 1), loc='upper left')
-        axs[1, 0].axis('off')
-        axs[1,1].imshow(prob_overlay2)
-        legend_elements = [Patch(facecolor=colors[1], label='prob_braf')]
-        axs[1, 1].legend(title='contribution', handles=legend_elements,
-                         bbox_to_anchor=(1, 1), loc='upper left')
-        axs[1, 1].axis('off')
-
-        axs[1,2].imshow(prob_overlay2)
-        axs[1, 2].imshow(prob_tot_over)
-        legend_elements = [Patch(facecolor=color, label=class_) for class_,
-                           color in zip(['MSIH','braf'], [colors[0],colors[1]])]
-        axs[1, 2].legend(title='contribution', handles=legend_elements,
-                         bbox_to_anchor=(1, 1), loc='upper left')
-        axs[1, 2].axis('off')
-
-        out_file = (out_dir/f'CRC_paper_{slide_path.stem}').with_suffix(format)
-        print(f'Writing output to file: {out_file}')
-        out_file.parent.mkdir(exist_ok=True, parents=True)
-        plt.savefig(out_file, bbox_inches='tight')
-        plt.close('all')
-
-    return
-
-def plot_heatmaps_CRC_RAINBOW(out_dir: Path, train_dir: Path, ws_path: Path, h5_feature_dir: Path,
-                               alpha: float = 0.6):
-
-    format = '.svg'
-    plt.figure(dpi=600)
-
-    slide_features = _get_slide_features(h5_feature_dir, ws_path)
-
-    learn = load_learner(train_dir/'export.pkl')
-    target_enc = get_target_enc(learn)
-    categories = target_enc.categories_[0]
-
-    str_targets = ['contrib_'+target for target in categories]
-    categories = categories.tolist()
-    while len(categories) < 4:
-        categories.append(None)
-
-    from openslide import OpenSlide
-    map_types = [MapType.ATTENTION, MapType.CONTRIBUTION]
-    for slide_path, h5_feature_path in slide_features:
-        dict_maptype_to_coords_scores = get_dict_maptype_to_coords_scores(
-            h5_feature_path, model=learn.model, map_types=map_types)
-        coords, att_scores = dict_maptype_to_coords_scores[MapType.ATTENTION]
-
-        stride = _get_stride(coords)
-        covered_area = (coords.max(0)+stride)
-
-        # get thumbnail
-
-        assert slide_path.suffix in wsi_suffixes, \
-            f'cannot read files with extension {slide_path.suffix}. ' \
-            f'Please provide a WSI with extension in {wsi_suffixes}.'
-
-        slide = OpenSlide(str(slide_path))
-        level = next((i for i, dims in enumerate(slide.level_dimensions)
-                     if max(dims) <= 2400*2),
-                     slide.level_count-1)
-        thumb = slide.read_region(
-            (0, 0), level, slide.level_dimensions[level])
-        covered_area_size = (
-            covered_area / slide.level_downsamples[level]).astype(int)
-
-        # get attention map in overlay
-        heatmap = _MIL_heatmap_for_slide(coords=coords, scores=att_scores)
-        heatmap[:, :, -1] = heatmap[:, :, -1]*alpha
-        heatmap = Image.fromarray(heatmap)
-        # make heatmap and thumb the same size
-        scaled_heatmap = Image.new('RGBA', thumb.size)
-        scaled_heatmap.paste(heatmap.resize(
-            covered_area_size, resample=Image.Resampling.NEAREST))
-        att_overlay = Image.alpha_composite(thumb, scaled_heatmap)
-
-        _, cont_scores = dict_maptype_to_coords_scores[MapType.CONTRIBUTION]
-        heatmap = _MIL_heatmap_for_slide(coords=coords, scores=cont_scores)
-        heatmap[:, :, -1] = heatmap[:, :, -1]*alpha
-        heatmap = Image.fromarray(heatmap)
-        # make heatmap and thumb the same size
-        scaled_heatmap = Image.new('RGBA', thumb.size)
-        scaled_heatmap.paste(heatmap.resize(
-            covered_area_size, resample=Image.Resampling.NEAREST))
-        cont_overlay = Image.alpha_composite(thumb, scaled_heatmap)
-
-        _, axs = plt.subplots(2, 4, figsize=(12, 6), dpi=300)
-        axs[0, 0].imshow(thumb)
-        axs[0, 0].legend(title='thumb')
-        axs[0, 0].axis('off')
-        axs[0, 1].imshow(att_overlay)
-        axs[0, 1].axis('off')
-        axs[0, 1].legend(title='attention')
-        axs[0, 2].imshow(cont_overlay)
-        axs[0, 2].axis('off')
-        legend_elements = [Patch(facecolor=color, label=class_) for class_,
-                           color in zip(str_targets, colors)]
-        axs[0, 2].legend(title='contribution', handles=legend_elements,
-                         bbox_to_anchor=(1, 1), loc='upper left')
-        axs[0, 3].axis('off')
-
-        for i, cat in enumerate(categories):
-            if cat is not None:
-                color = np.expand_dims(colors[i, :], axis=0)
-                heatmap0 = _MIL_heatmap_for_slide(
-                    coords=coords, scores=cont_scores[:, i], colours=color)
-                heatmap0 = Image.fromarray(heatmap0)
-                scaled_heatmap0 = Image.new('RGBA', thumb.size)
-                legend_elements = [Patch(facecolor=colors[i], label=cat)]
-                scaled_heatmap0.paste(heatmap0.resize(
-                    covered_area_size, resample=Image.Resampling.NEAREST))
-                axs[1, i].legend
-                axs[1, i].imshow(scaled_heatmap0)
-                axs[1, i].axis('off')
-                axs[1, i].legend(handles=legend_elements)
-            else:
-                axs[1, i].axis('off')
-
-        out_file = (out_dir/f'CRC_paper_{slide_path.stem}').with_suffix(format)
-        print(f'Writing output to file: {out_file}')
-        out_file.parent.mkdir(exist_ok=True, parents=True)
-        plt.savefig(out_file, bbox_inches='tight')
-        plt.close('all')
+    heatmap = _MIL_heatmap_for_slide(coords=coords, scores= scores,
+                            colours=colors)
+    heatmap[:, :, -1] = heatmap[:, :, -1]*alpha
+    heatmap = Image.fromarray(heatmap)
+    # make heatmap and thumb the same size
+    scaled_heatmap = Image.new('RGBA', thumb.size)
+    scaled_heatmap.paste(heatmap.resize(
+        covered_area_size, resample=Image.Resampling.NEAREST))
+    return Image.alpha_composite(thumb, scaled_heatmap)
 
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate heatmaps for whole slide images.")
 
+    parser.add_argument("--out_dir", type=Path, required=True, help="Directory to store output heatmaps.")
+    parser.add_argument("--train_dir", type=Path, required=True, help="Directory where training was done (contains export.pkl).")
+    parser.add_argument("--ws_path", type=Path, required=True, help="Path to a whole slide image or a directory of images.")
+    parser.add_argument("--h5_feature_dir", type=Path, required=True, help="Directory containing the features used in training.")
+    parser.add_argument("--map_types", type=str, nargs='*', default=['ATTENTION'], help="List of map types (ATTENTION, PREDICTION, CONTRIBUTION).")
+    parser.add_argument("--superimpose", action="store_true", help="If present, superimpose the heatmap on the image (default: False)")
+    parser.add_argument("--alpha", type=float, default=0.5, help="Transparency level of the heatmap overlay.")
+    parser.add_argument("--threshold_map", type=float, default=1.0, help="Threshold of the heatmap to focus on high attention areas.")
+    parser.add_argument("--heatmap_scale_x", type=float, default=1.0, help="Scaling factor for heatmap width (default: 1)")
+    parser.add_argument("--heatmap_scale_y", type=float, default=1.0, help="Scaling factor for heatmap height (default: 1)")
+    args = parser.parse_args()
+    # Convert string map types to MapType enum values
+    map_types = [MapType[mt] for mt in args.map_types]
 
-# %%
-# train_dir = Path(
-#    '/home/janniehues/Documents/CRC_Rainbow/MIL_marugoto/Xiyue-Wang/test/fold-0/')
-#project_dir = Path.cwd()
-# h5_feature_dir = Path(
-#    '/home/janniehues/Documents/CRC_Rainbow/features/Xiyue-Wang/')
-#ws_path = Path('/home/janniehues/Downloads/ws_Rainbow/')
-# '/home/janniehues/Downloads/Rainbow01_1008272_Wholeslide_Default_Extended.tif')
-# plot_heatmaps(outdir=project_dir, train_dir=train_dir, ws_path=ws_path, h5_feature_dir=h5_feature_dir,
-#              categories=['MSIH', 'nonMSIH'], map_types=[MapType.ATTENTION, MapType.PROBABILITY, MapType.CONTRIBUTION])
-
-# %%
-# learner = load_learner(
-#    '/home/janniehues/Documents/CRC_Rainbow/MIL_marugoto/Xiyue-Wang/test/fold-0/export.pkl')
-# print(learner.target_label)
-#target_enc = get_target_enc(learner)
-#categories = target_enc.categories_[0]
-# print(categories)
-# target_enc.transform([[categories[0]]])[0,:]
-
-# %%
-# model = load_learner(
-#    '/home/janniehues/Documents/CRC_Rainbow/MIL_marugoto/Xiyue-Wang/test/fold-0/export.pkl').model
-# h5_feature_path = Path(
-#    '/home/janniehues/Documents/CRC_Rainbow/features/Xiyue-Wang/Rainbow01_1008272_Wholeslide_Default_Extended.h5')
-# heatmap_dat = _MIL_heatmap_for_slide(
-#    h5_feature_path, model, pos_idxs=[0], map_type='attention')
-#
-# _plot_heatmap(heatmap_dat, wsi_path=Path(
-#    '/home/janniehues/Downloads/Rainbow01_1008272_Wholeslide_Default_Extended.tif'), superimpose=True)
-
-
-# %%
+    # Call the main function with parsed arguments
+    plot_heatmaps_(
+        out_dir=args.out_dir,
+        train_dir=args.train_dir,
+        ws_path=args.ws_path,
+        h5_feature_dir=args.h5_feature_dir,
+        map_types=map_types,
+        superimpose=args.superimpose,
+        alpha=args.alpha,
+        threshold_map = args.threshold_map,
+        heatmap_scale_x=args.heatmap_scale_x,
+        heatmap_scale_y=args.heatmap_scale_y
+    )
