@@ -146,7 +146,8 @@ def _MIL_heatmap_for_slide(coords: np.ndarray, scores: np.ndarray,
 def _plot_heatmap_(coords, heatmap,
                    outdir: Path, wsi_path: Optional[Path] = None,
                    superimpose: bool = True, alpha: float = 0.5,
-                   heatmap_scale_x: float = 1.0, heatmap_scale_y: float = 1.0) -> None:
+                   heatmap_scale_x: float = 1.0, heatmap_scale_y: float = 1.0,
+                   threshold_map: float = 1.0) -> None:
     format = '.svg'
     stride = _get_stride(coords)
     covered_area = (coords.max(0) + stride)
@@ -223,8 +224,14 @@ def _plot_heatmap_(coords, heatmap,
 
     cbar_obj = plt.colorbar(sm, ax=plt.gca(), fraction=0.046, pad=0.04)
     cbar_obj.set_label('Attention Level')
+    # filename part
+    if superimpose:
+        suffix = ""  # No extra suffix needed
+    else:
+        suffix = "_divided"  # Add "_divided" if superimpose is not present
 
-    out_file = (outdir / wsi_path.stem).with_suffix(format) if wsi_path else (outdir / "heatmap").with_suffix(format)
+    filename = f"{wsi_path.stem}{suffix}_att_lvl_{threshold_map}".replace('.', '_')
+    out_file = (outdir / filename).with_suffix(format)   
     print('[HEATMAP]')
     print(f'Writing output to file: {out_file}')
     out_file.parent.mkdir(exist_ok=True, parents=True)
@@ -474,7 +481,8 @@ def plot_heatmaps_(out_dir: Path, train_dir: Path, ws_path: Path, h5_feature_dir
 
             _plot_heatmap_(coords, heatmap=heatmap,
                            outdir=out_dir/map_type.name, wsi_path=slide_path, superimpose=superimpose, 
-                           alpha=alpha, heatmap_scale_x=heatmap_scale_x, heatmap_scale_y=heatmap_scale_y)
+                           alpha=alpha, heatmap_scale_x=heatmap_scale_x, heatmap_scale_y=heatmap_scale_y,
+                           threshold_map=threshold_map)
             
             score_ranking_df = save_top_patches_to_csv(dict_maptype_to_coords_scores, map_type=map_type, top_n=50)
             out_file = ((out_dir/map_type.name) / "top_patches_ranking.csv")
