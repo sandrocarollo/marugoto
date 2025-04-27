@@ -3,8 +3,9 @@
 This repository has been adapted from the main Marugoto pipeline for the IBDome database paper.
 
 
-Note: for more information please refer to [IBDome](https://github.com/icbi-lab/plattner_ibdome_2025.git)
-for more information regarding setting up marugoto, see [documentation](https://github.com/KatherLab/marugoto/blob/main/Documentation.md).
+Note: For more information please refer to [IBDome](https://github.com/icbi-lab/plattner_ibdome_2025.git)
+
+And for setting up marugoto, see [documentation](https://github.com/KatherLab/marugoto/blob/main/Documentation.md).
 
 ### H&E Images
 
