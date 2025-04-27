@@ -9,3 +9,5 @@ runs/
 results/
 *.out
 marugoto.egg-info/
+heatmaps*/
+temp*/
