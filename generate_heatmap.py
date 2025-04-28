@@ -61,15 +61,15 @@ def main():
     args = parser.parse_args()
 
     # Paths
-    slide_csv_path = "../metadata_HE/slide.csv"
+    slide_csv_path = "./results/metadata_HE/slide.csv"
     if args.score_type == 'riley':
-        folds_base_dir = "/data/projects/2023/DLAyoCRC/results/marugoto/IBD_location_split_CV_4/StratifiedKFold/IBD_reg_riley_Virchow2_Berlin_mil_class_token"
-        all_h5_dir = "/data/projects/2023/DLAyoCRC/results/stamp/Embeddings/IBD/IBD_features_Virchow2/STAMP_macenko_virchow2"
+        folds_base_dir = "./results/IBD_reg_riley_Virchow2_Berlin_mil_class_token"
+        all_h5_dir = "./results/IBD_features_Virchow2/STAMP_macenko_virchow2"
     if args.score_type == 'cortina':
-        folds_base_dir = "/data/projects/2023/DLAyoCRC/results/marugoto/IBD_location_split_CV_4/StratifiedKFold/IBD_reg_cortina_UNI2_Berlin_mil"
-        all_h5_dir = "/data/projects/2023/DLAyoCRC/results/stamp/Embeddings/IBD/IBD_features_UNI2/STAMP_macenko_mahmood-uni2"
-    wsis_base_dir = "/data/projects/2019/IBDome/input_data/endoscopy-histopathology/imaging"
-    output_dir = "./heatmaps"
+        folds_base_dir = "./results/IBD_reg_cortina_UNI2_Berlin_mil"
+        all_h5_dir = "./results/IBD_features_UNI2/STAMP_macenko_mahmood-uni2"
+    wsis_base_dir = "./data/imaging"
+    output_dir = "./results/heatmaps"
 
     # Find patient ID
     patient_id = find_patient_id(args.wsi_name, slide_csv_path)
@@ -81,7 +81,7 @@ def main():
 
     # Paths
     train_dir = os.path.join(folds_base_dir, f"fold-{fold_num}")
-    h5_dir_to_use = prepare_h5(args, all_h5_dir=all_h5_dir, riley_h5_dir="./temp_riley_h5")
+    h5_dir_to_use = prepare_h5(args, all_h5_dir=all_h5_dir, riley_h5_dir="./results/temp_riley_h5")
 
     # WSI path
     wsi_path = find_wsi_path(args.wsi_name, wsis_base_dir)
@@ -91,12 +91,12 @@ def main():
     scale_x, scale_y = get_scaling_factors(patient_id)
 
     # Create output folder if needed
-    final_output_dir = f"{output_dir}_{args.score_type}_{patient_id}"
+    final_output_dir = f"{output_dir}/{args.score_type}_{patient_id}"
     os.makedirs(final_output_dir, exist_ok=True)
 
     # Run the heatmap script
     cmd = [
-        "python", "marugoto/visualizations/mil_heatmaps.py",
+        "python", "external_tools/marugoto/marugoto/visualizations/mil_heatmaps.py",
         "--train_dir", train_dir,
         "--h5_feature_dir", h5_dir_to_use,
         "--out_dir", final_output_dir,

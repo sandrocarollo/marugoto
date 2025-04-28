@@ -9,17 +9,17 @@ fi
 TASK=$1
 
 if [ "$TASK" == "riley" ]; then
-    CLINI_EXCEL="../metadata_HE/clini_table_riley_berlin.csv"
-    SLIDE_CSV="../metadata_HE/slide_class_token.csv"
-    FEATURE_DIR="../results/IBD_features_Virchow2/STAMP_macenko_virchow2"
+    CLINI_EXCEL="./results/metadata_HE/clini_table_riley_berlin.csv"
+    SLIDE_CSV="./results/metadata_HE/slide_class_token.csv"
+    FEATURE_DIR="./results/IBD_features_Virchow2/STAMP_macenko_virchow2"
     TARGET_LABEL="normalized_riley_score"
-    OUTPUT_PATH="../results/IBD_riley_Virchow2_Berlin_mil"
+    OUTPUT_PATH="./results/IBD_riley_Virchow2_Berlin_mil"
 elif [ "$TASK" == "cortina" ]; then
-    CLINI_EXCEL="../metadata_HE/clini_table_cortina_berlin.csv"
-    SLIDE_CSV="../metadata_HE/slide.csv"
-    FEATURE_DIR="../results/IBD_features_UNI2/STAMP_macenko_mahmood-uni2"
+    CLINI_EXCEL="./results/metadata_HE/clini_table_cortina_berlin.csv"
+    SLIDE_CSV="./results/metadata_HE/slide.csv"
+    FEATURE_DIR="./results/IBD_features_UNI2/STAMP_macenko_mahmood-uni2"
     TARGET_LABEL="normalized_naini_cortina_score"
-    OUTPUT_PATH="../results/IBD_cortina_UNI2_Berlin_mil"
+    OUTPUT_PATH="./results/IBD_cortina_UNI2_Berlin_mil"
 else
     echo "Invalid scoring system: $TASK"
     echo "Please choose 'riley' for Riley score or 'cortina' for Naini Cortina score"
